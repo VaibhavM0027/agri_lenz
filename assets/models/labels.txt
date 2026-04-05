@@ -1,0 +1,6 @@
+Healthy
+Leaf Blight
+Powdery Mildew
+Rust
+Leaf Spot
+Pest Damage
