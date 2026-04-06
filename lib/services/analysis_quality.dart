@@ -10,17 +10,32 @@ class PhotoQualityAnalyzer {
   const PhotoQualityAnalyzer._();
 
   static AnalysisQuality assess(Uint8List bytes) {
-    final im = img.decodeImage(bytes);
-    if (im == null) {
-      return const AnalysisQuality(score: 35, hint: 'Image could not be read — try another file.');
-    }
+    try {
+      final im = img.decodeImage(bytes);
+      if (im == null) {
+        return const AnalysisQuality(score: 35, hint: 'Image could not be read — try another file.');
+      }
 
-    final small = img.copyResize(im, width: math.min(320, im.width), interpolation: img.Interpolation.average);
-    final w = small.width;
-    final h = small.height;
-    if (w < 8 || h < 8) {
-      return const AnalysisQuality(score: 40, hint: 'Photo resolution is very low — move closer to the leaf.');
-    }
+      // Resize large images to prevent memory issues (max 1024px for quality check)
+      img.Image workingImage = im;
+      if (im.width > 1024 || im.height > 1024) {
+        final scale = 1024 / math.max(im.width, im.height);
+        final newWidth = (im.width * scale).round();
+        final newHeight = (im.height * scale).round();
+        workingImage = img.copyResize(
+          im,
+          width: newWidth,
+          height: newHeight,
+          interpolation: img.Interpolation.average,
+        );
+      }
+
+      final small = img.copyResize(workingImage, width: math.min(320, workingImage.width), interpolation: img.Interpolation.average);
+      final w = small.width;
+      final h = small.height;
+      if (w < 8 || h < 8) {
+        return const AnalysisQuality(score: 40, hint: 'Photo resolution is very low — move closer to the leaf.');
+      }
 
     var sumL = 0.0;
     var sumL2 = 0.0;
@@ -75,6 +90,10 @@ class PhotoQualityAnalyzer {
     }
 
     return AnalysisQuality(score: combined, hint: hint);
+    } catch (e) {
+      print('Warning: Photo quality assessment failed: $e');
+      return const AnalysisQuality(score: 50, hint: 'Could not fully assess photo quality — proceeding with analysis.');
+    }
   }
 }
 

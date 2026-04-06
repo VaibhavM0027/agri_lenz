@@ -49,5 +49,7 @@
 	<string>Agri Lenz needs camera access to capture crop leaf photos for health analysis.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Agri Lenz needs photo library access to select leaf images for analysis.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Location is optional — used for local weather and regional crop tips.</string>
 </dict>
 </plist>

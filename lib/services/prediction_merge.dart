@@ -1,8 +1,8 @@
 import '../models/analysis_models.dart';
 import 'tflite_post_process.dart';
+import 'vision_robust.dart';
 
-/// When a TFLite model labels a leaf [Healthy] (or uncertain / likely healthy) but low-level vision
-/// shows holes, speckles, or chew margins, prefer heuristics or a synthetic pest-injury class.
+/// Vision merge with **healthy-canopy guard** to avoid false pest/critical on lush leaves.
 class PredictionMerge {
   const PredictionMerge._();
 
@@ -17,38 +17,62 @@ class PredictionMerge {
   }) {
     final pest = visual.pestInjuryScore;
     final tex = visual.textureDamageScore;
+    final lush = VisionRobustness.isHealthyLookingCanopy(visual);
 
     if (!_actsLikeHealthy(tflite.label)) {
-      final trustHeuristicForPest = pest >= 0.15 &&
+      // EXTREMELY conservative: only override TFLite with very strong visual evidence
+      final trustHeuristicForPest = pest >= 0.265 &&  // Was 0.215
           heuristic.label == 'Pest Damage' &&
-          heuristic.confidence >= tflite.confidence * 0.5;
+          heuristic.confidence >= tflite.confidence * 0.78 &&  // Was 0.68
+          (!lush || pest >= 0.23);  // Was 0.18
       if (trustHeuristicForPest) {
         return MergeResult(prediction: heuristic, usedRawTflite: false);
       }
       return MergeResult(prediction: tflite, usedRawTflite: true);
     }
-
-    // TFLite says healthy or uncertain — gate on injury cues.
-    final visuallyStressed = pest >= 0.055 || tex >= 0.165 || visual.darkSpotRatio >= 0.06;
+    
+    // TFLite: healthy / uncertain — EXTREMELY strict "stress" bar on lush canopies (veins ≠ pests).
+    final visuallyStressed = lush
+        ? (pest >= 0.225 && (tex >= 0.42 || visual.darkSpotRatio >= 0.138))  // Was 0.175, 0.36, 0.108
+        : (pest >= 0.152 || tex >= 0.305 || visual.darkSpotRatio >= 0.112);  // Was 0.112, 0.245, 0.082
 
     if (!visuallyStressed) {
       return MergeResult(prediction: tflite, usedRawTflite: true);
     }
 
-    if (heuristic.label != 'Healthy' && (pest >= 0.045 || tex >= 0.14)) {
+    if (lush) {
+      // EXTREMELY strict for lush canopies - avoid false disease detection
+      if (heuristic.label != 'Healthy' &&
+          heuristic.label != 'Pest Damage' &&
+          pest >= 0.198 &&  // Was 0.148
+          (tex >= 0.36 || visual.darkSpotRatio >= 0.118)) {  // Was 0.30, 0.088
+        return MergeResult(prediction: heuristic, usedRawTflite: false);
+      }
+      if (heuristic.label == 'Pest Damage' && pest >= 0.238 && tex >= 0.36) {  // Was 0.188, 0.30
+        return MergeResult(prediction: heuristic, usedRawTflite: false);
+      }
+      if (pest >= 0.275 && (tex >= 0.40 || visual.darkSpotRatio >= 0.132)) {  // Was 0.225, 0.34, 0.102
+        return MergeResult(
+          prediction: _syntheticInjury(labels, visual),
+          usedRawTflite: false,
+        );
+      }
+      return MergeResult(prediction: tflite, usedRawTflite: true);
+    }
+
+    if (heuristic.label != 'Healthy' && (pest >= 0.132 || tex >= 0.285)) {  // Was 0.092, 0.225
       return MergeResult(prediction: heuristic, usedRawTflite: false);
     }
 
-    if (pest >= 0.09 || (pest >= 0.065 && tex >= 0.175)) {
+    if (pest >= 0.195 || (pest >= 0.168 && tex >= 0.325)) {  // Was 0.155, 0.128, 0.265
       return MergeResult(
         prediction: _syntheticInjury(labels, visual),
         usedRawTflite: false,
       );
     }
 
-    // Heuristic can miss rare cases; still force injury when cues are clear.
-    if (pest >= 0.068 &&
-        (tex >= 0.152 || visual.darkSpotRatio >= 0.05) &&
+    if (pest >= 0.165 &&  // Was 0.125
+        (tex >= 0.295 || visual.darkSpotRatio >= 0.112) &&  // Was 0.235, 0.082
         heuristic.label == 'Healthy') {
       return MergeResult(
         prediction: _syntheticInjury(labels, visual),
@@ -61,7 +85,7 @@ class PredictionMerge {
 
   static DiseasePrediction _syntheticInjury(List<String> labels, LeafVisualFeatures v) {
     final label = labels.contains('Pest Damage') ? 'Pest Damage' : 'Leaf Spot';
-    final conf = (0.52 + v.pestInjuryScore * 0.38 + v.textureDamageScore * 0.14).clamp(0.5, 0.94);
+    final conf = (0.42 + v.pestInjuryScore * 0.32 + v.textureDamageScore * 0.12).clamp(0.42, 0.88);
     final rest = labels.where((l) => l != label).toList();
     final per = rest.isEmpty ? 0.0 : (1.0 - conf) / rest.length;
     final map = <String, double>{for (final l in labels) l: per};

@@ -9,14 +9,93 @@ import 'image_preprocess.dart';
 /// Derives leaf color/texture signals used for soil hints, damage heuristics,
 /// pest-injury proxies, and fallback disease scoring when no TFLite model is bundled.
 class LeafVisualAnalyzer {
-  /// Fuses multiple sampling scales + illumination-normalized pass (reduces false “healthy”).
+  /// Fuses **four** scales + normalized pass; dampens pest/texture when scales **disagree** (stabler signal).
   static LeafVisualFeatures analyzeEnhanced(Uint8List imageBytes) {
-    final normalized = ImagePreprocess.normalizeIlluminationBytes(imageBytes);
-    return _averageFeatures([
-      analyze(imageBytes, sampleWidth: 228),
-      analyze(imageBytes, sampleWidth: 172),
-      analyze(normalized, sampleWidth: 200),
-    ]);
+    // CRITICAL: Decode and resize large camera images ONCE to prevent memory overflow
+    img.Image? mainImage;
+    try {
+      mainImage = img.decodeImage(imageBytes);
+      if (mainImage == null) {
+        print('Warning: Could not decode image');
+        return _emptyFeatures();
+      }
+      
+      // Resize if too large (max 2048px)
+      if (mainImage.width > 2048 || mainImage.height > 2048) {
+        final scale = 2048 / math.max(mainImage.width, mainImage.height);
+        final newWidth = (mainImage.width * scale).round();
+        final newHeight = (mainImage.height * scale).round();
+        mainImage = img.copyResize(
+          mainImage,
+          width: newWidth,
+          height: newHeight,
+          interpolation: img.Interpolation.linear,
+        );
+      }
+    } catch (e) {
+      print('Warning: Image preprocessing failed: $e');
+      return _emptyFeatures();
+    }
+    
+    // Convert resized image back to bytes for normalization
+    final resizedBytes = Uint8List.fromList(img.encodeJpg(mainImage, quality: 90));
+    final normalized = ImagePreprocess.normalizeIlluminationBytes(resizedBytes);
+    
+    final scales = [
+      analyze(resizedBytes, sampleWidth: 232),
+      analyze(resizedBytes, sampleWidth: 196),
+      analyze(resizedBytes, sampleWidth: 164),
+      analyze(normalized, sampleWidth: 208),
+    ];
+    return _fuseWithCrossScaleStability(scales);
+  }
+  
+  /// Return empty/default features on error
+  static LeafVisualFeatures _emptyFeatures() {
+    return LeafVisualFeatures(
+      greenRatio: 0.5,
+      yellowRatio: 0.1,
+      brownRatio: 0.1,
+      paleRatio: 0.1,
+      darkSpotRatio: 0.05,
+      rustLikeRatio: 0.05,
+      borderBrownBias: 0.1,
+      textureDamageScore: 0.1,
+      pestInjuryScore: 0.05,
+    );
+  }
+
+  static double _stdDev(List<double> xs) {
+    if (xs.isEmpty) return 0;
+    final m = xs.reduce((a, b) => a + b) / xs.length;
+    var s = 0.0;
+    for (final x in xs) {
+      s += (x - m) * (x - m);
+    }
+    return math.sqrt(s / xs.length);
+  }
+
+  static LeafVisualFeatures _fuseWithCrossScaleStability(List<LeafVisualFeatures> list) {
+    final avg = _averageFeatures(list);
+    final pestStd = _stdDev(list.map((e) => e.pestInjuryScore).toList());
+    final texStd = _stdDev(list.map((e) => e.textureDamageScore).toList());
+    var p = avg.pestInjuryScore;
+    var t = avg.textureDamageScore;
+    if (pestStd > 0.034) p *= 0.82;
+    if (pestStd > 0.048) p *= 0.88;
+    if (texStd > 0.038) t *= 0.84;
+    if (texStd > 0.052) t *= 0.90;
+    return LeafVisualFeatures(
+      greenRatio: avg.greenRatio,
+      yellowRatio: avg.yellowRatio,
+      brownRatio: avg.brownRatio,
+      paleRatio: avg.paleRatio,
+      darkSpotRatio: avg.darkSpotRatio,
+      rustLikeRatio: avg.rustLikeRatio,
+      borderBrownBias: avg.borderBrownBias,
+      textureDamageScore: t.clamp(0.0, 1.0),
+      pestInjuryScore: p.clamp(0.0, 1.0),
+    );
   }
 
   static LeafVisualFeatures _averageFeatures(List<LeafVisualFeatures> list) {
@@ -158,8 +237,18 @@ class LeafVisualAnalyzer {
     final rustLikeRatio = rust * inv;
     final borderBrownBias = borderN == 0 ? 0.0 : borderBrown / borderN;
 
-    final textureDamageScore = _textureDamage(sample);
-    final pestInjuryScore = _pestInjuryScore(sample, greenRatio, isLeafGreen, lum);
+    var textureDamageScore = _textureDamage(sample);
+    if (greenRatio > 0.36 && yellowRatio < 0.11 && brownRatio < 0.09) {
+      textureDamageScore *= 0.78;
+    }
+    final pestInjuryScore = _pestInjuryScore(
+      sample,
+      greenRatio,
+      yellowRatio,
+      brownRatio,
+      isLeafGreen,
+      lum,
+    );
 
     return LeafVisualFeatures(
       greenRatio: greenRatio,
@@ -205,6 +294,8 @@ class LeafVisualAnalyzer {
   static double _pestInjuryScore(
     img.Image im,
     double greenRatio,
+    double yellowRatio,
+    double brownRatio,
     bool Function(int r, int g, int b) isLeafGreen,
     double Function(num r, num g, num b) lum,
   ) {
@@ -247,22 +338,23 @@ class LeafVisualAnalyzer {
 
         n2++;
 
-        if (l < 55) darkCore++;
+        // Stricter dark core — shadows on healthy blades are common.
+        if (l < 48) darkCore++;
 
-        // Hole / tear rim: darker patch touching green leaf tissue.
-        if (l < 92 && l > 18 && greenNbr >= 1) holeEdge++;
+        // Hole / tear rim: need adjacent green tissue on **two** sides (reduces vein false positives).
+        if (l < 86 && l > 22 && greenNbr >= 2) holeEdge++;
 
-        // Speckle: local dark dot on brighter leaf background (thrips / frass / small wounds).
-        if (l < 82 && meanNbr - l > 22) speckle++;
+        // Speckle: stronger local contrast than vein shadows.
+        if (l < 78 && meanNbr - l > 30) speckle++;
 
-        // Chewing: strong local contrast while center pixel still looks like leaf green.
+        // Chewing: only count strong edges (veins are softer than bite margins).
         if (isLeafGreen(r, g, b)) {
           final gx = (im.getPixel(x + 1, y).r - im.getPixel(x - 1, y).r).abs() +
               (im.getPixel(x + 1, y).g - im.getPixel(x - 1, y).g).abs();
           final gy = (im.getPixel(x, y + 1).r - im.getPixel(x, y - 1).r).abs() +
               (im.getPixel(x, y + 1).g - im.getPixel(x, y - 1).g).abs();
           final grad = (gx + gy) / (4 * 255);
-          if (grad > 0.18) chewMargin++;
+          if (grad > 0.32) chewMargin++;
         }
       }
     }
@@ -275,10 +367,16 @@ class LeafVisualAnalyzer {
     final dSpeck = speckle * inv2;
     final dChew = chewMargin * inv2;
 
-    var score = dCore * 2.8 + dHole * 2.05 + dSpeck * 1.65 + dChew * 1.35;
+    var score = dCore * 2.2 + dHole * 1.55 + dSpeck * 1.25 + dChew * 1.05;
 
-    // Real leaf photos are mostly green; boost sensitivity when tissue looks like a leaf.
-    if (greenRatio > 0.22) score *= 1.0 + (greenRatio - 0.22).clamp(0.0, 0.5) * 0.55;
+    // Lush green canopies: veins + lighting often look like “damage” — dampen score.
+    if (greenRatio > 0.36 && yellowRatio < 0.11 && brownRatio < 0.088) {
+      score *= 0.40;
+    } else if (greenRatio > 0.33 && yellowRatio < 0.12 && brownRatio < 0.095) {
+      score *= 0.50;
+    } else if (greenRatio > 0.28) {
+      score *= 0.85;
+    }
 
     return score.clamp(0.0, 1.0);
   }

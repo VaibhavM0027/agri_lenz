@@ -54,6 +54,11 @@ class ComparisonScreen extends StatelessWidget {
             a: '${left.photoQuality.score}',
             b: '${right.photoQuality.score}',
           ),
+          _DiffRow(
+            label: 'Moisture (fused)',
+            a: '${left.soilMoistureBand.emoji} ${left.soilMoistureBand.shortLabel}',
+            b: '${right.soilMoistureBand.emoji} ${right.soilMoistureBand.shortLabel}',
+          ),
           const SizedBox(height: 12),
           Text('Interpretation', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),

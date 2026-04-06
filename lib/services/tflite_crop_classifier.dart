@@ -59,15 +59,29 @@ class TfliteCropClassifier {
 
   /// Raw CNN prediction (no confidence gate). Apply [TflitePostProcess.applyConfidenceGate] in the pipeline.
   DiseasePrediction? classify(Uint8List imageBytes) {
-    final inputTensor = _interpreter.getInputTensor(0);
-    final outputTensor = _interpreter.getOutputTensor(0);
-    final inShape = inputTensor.shape;
-    final outShape = outputTensor.shape;
-    final outLen = outShape.fold<int>(1, (a, b) => a * b);
-    if (outLen != _labels.length) return null;
+    try {
+      final inputTensor = _interpreter.getInputTensor(0);
+      final outputTensor = _interpreter.getOutputTensor(0);
+      final inShape = inputTensor.shape;
+      final outShape = outputTensor.shape;
+      final outLen = outShape.fold<int>(1, (a, b) => a * b);
+      if (outLen != _labels.length) return null;
 
-    final decoded = img.decodeImage(imageBytes);
-    if (decoded == null) return null;
+      var decoded = img.decodeImage(imageBytes);
+      if (decoded == null) return null;
+      
+      // Resize large images to prevent memory issues with TFLite (max 1024px)
+      if (decoded.width > 1024 || decoded.height > 1024) {
+        final scale = 1024 / math.max(decoded.width, decoded.height);
+        final newWidth = (decoded.width * scale).round();
+        final newHeight = (decoded.height * scale).round();
+        decoded = img.copyResize(
+          decoded,
+          width: newWidth,
+          height: newHeight,
+          interpolation: img.Interpolation.linear,
+        );
+      }
 
     final inputType = inputTensor.type;
     final Object input;
@@ -129,6 +143,10 @@ class TfliteCropClassifier {
       confidence: bestV.clamp(0.0, 1.0),
       allScores: map,
     );
+    } catch (e) {
+      print('Warning: TFLite classification failed: $e');
+      return null;
+    }
   }
 
   /// Treat as logits (softmax) unless values already look like a probability simplex.

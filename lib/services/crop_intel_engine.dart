@@ -1,9 +1,24 @@
 import '../models/analysis_models.dart';
+import 'crop_health_policy.dart';
+import 'disease_remedies.dart';
+import 'soil_moisture_advisor.dart';
 import 'tflite_post_process.dart';
+import 'vision_robust.dart';
 
 class SoilInsightEngine {
-  static String describe(LeafVisualFeatures f) {
-    if (f.pestInjuryScore > 0.12) {
+  static String describe(LeafVisualFeatures f, {SoilMoistureLevel? moisture}) {
+    var base = _baseLeafSoilHint(f);
+    if (moisture != null) {
+      final cross = SoilMoistureAdvisor.crossCheckWithLeaf(base, moisture);
+      if (cross.isNotEmpty) {
+        base = '$base $cross';
+      }
+    }
+    return base;
+  }
+
+  static String _baseLeafSoilHint(LeafVisualFeatures f) {
+    if (f.pestInjuryScore > 0.16) {
       return 'Irregular holes, speckles, or chew marks — often insect or mechanical injury rather than soil chemistry alone';
     }
     if (f.yellowRatio > 0.16) {
@@ -15,7 +30,7 @@ class SoilInsightEngine {
     if (f.paleRatio > 0.22) {
       return 'Pale foliage — poor soil fertility or micronutrient stress possible';
     }
-    if (f.greenRatio > 0.35 && f.yellowRatio < 0.08 && f.brownRatio < 0.08 && f.pestInjuryScore < 0.06) {
+    if (f.greenRatio > 0.35 && f.yellowRatio < 0.08 && f.brownRatio < 0.08 && f.pestInjuryScore < 0.085) {
       return 'Leaf color suggests adequate fertility from this view';
     }
     return 'No strong soil stress signature — keep balanced NPK and organic matter';
@@ -27,61 +42,40 @@ class PestRiskEngine {
       label == 'Healthy' || label == TflitePostProcess.uncertainLabel;
 
   static PestRiskLevel evaluate(DiseasePrediction disease, LeafVisualFeatures f) {
-    if (disease.label == 'Pest Damage') return PestRiskLevel.high;
+    final lush = VisionRobustness.isHealthyLookingCanopy(f);
 
-    if (!_treatAsHealthyForPest(disease.label)) return PestRiskLevel.high;
-
-    if (f.pestInjuryScore > 0.095) return PestRiskLevel.high;
-    if (f.pestInjuryScore > 0.055 || f.textureDamageScore > 0.165 || f.darkSpotRatio > 0.065) {
+    if (disease.label == 'Pest Damage') {
+      if (disease.confidence >= 0.72 || f.pestInjuryScore > (lush ? 0.11 : 0.095)) {
+        return PestRiskLevel.high;
+      }
       return PestRiskLevel.medium;
     }
-    return PestRiskLevel.low;
+
+    // Healthy / uncertain: pest tier follows **visible injury** only — no automatic “high”.
+    if (_treatAsHealthyForPest(disease.label)) {
+      final highP = lush ? 0.165 : 0.125;
+      final medP = lush ? 0.10 : 0.078;
+      final medTex = lush ? 0.26 : 0.195;
+      final medDark = lush ? 0.092 : 0.072;
+
+      if (f.pestInjuryScore > highP) return PestRiskLevel.high;
+      if (f.pestInjuryScore > medP || f.textureDamageScore > medTex || f.darkSpotRatio > medDark) {
+        return PestRiskLevel.medium;
+      }
+      return PestRiskLevel.low;
+    }
+
+    // Diseased tissue can attract secondary pests, but avoid labeling every disease photo “high”.
+    if (f.pestInjuryScore > (lush ? 0.14 : 0.115)) return PestRiskLevel.high;
+    if (disease.label == 'Leaf Blight' || disease.label == 'Rust') {
+      return PestRiskLevel.medium;
+    }
+    return PestRiskLevel.medium;
   }
 }
 
 class CropHealthEngine {
-  static CropHealthLevel evaluate(DiseasePrediction disease, LeafVisualFeatures f, PestRiskLevel pest) {
-    final healthy = disease.label == 'Healthy';
-    final conf = disease.confidence;
-
-    if (disease.label == 'Pest Damage' || (pest == PestRiskLevel.high && f.pestInjuryScore > 0.08)) {
-      return f.pestInjuryScore > 0.14 || disease.confidence > 0.72
-          ? CropHealthLevel.critical
-          : CropHealthLevel.moderate;
-    }
-
-    if (healthy &&
-        conf > 0.68 &&
-        f.greenRatio > 0.22 &&
-        f.brownRatio < 0.11 &&
-        f.pestInjuryScore < 0.055 &&
-        f.textureDamageScore < 0.155) {
-      return CropHealthLevel.healthy;
-    }
-
-    if (f.pestInjuryScore > 0.07 || pest == PestRiskLevel.high) {
-      return f.pestInjuryScore > 0.12 ? CropHealthLevel.critical : CropHealthLevel.moderate;
-    }
-
-    final severe = disease.label == 'Leaf Blight' || disease.label == 'Rust';
-    if (severe && conf > 0.4) return CropHealthLevel.critical;
-
-    if (disease.label == 'Leaf Spot' && conf > 0.52) return CropHealthLevel.critical;
-
-    if (disease.label == 'Powdery Mildew' && conf > 0.65) return CropHealthLevel.critical;
-
-    if (!healthy && conf > 0.58) return CropHealthLevel.critical;
-
-    if (!healthy && conf > 0.26) return CropHealthLevel.moderate;
-
-    if (healthy && conf > 0.52 && (f.yellowRatio > 0.12 || f.brownRatio > 0.1)) {
-      return CropHealthLevel.moderate;
-    }
-
-    if (f.brownRatio + f.darkSpotRatio > 0.26) return CropHealthLevel.moderate;
-
-    return CropHealthLevel.healthy;
-  }
+  static CropHealthLevel evaluate(LeafVisualFeatures f) => CropHealthPolicy.resolve(f);
 }
 
 class RecommendationEngine {
@@ -93,6 +87,7 @@ class RecommendationEngine {
     LeafVisualFeatures visual,
     AnalysisQuality photo,
     UncertaintyHint uncertainty,
+    SoilMoistureLevel? soilMoisture,
   ) {
     final out = <String>[];
 
@@ -112,7 +107,30 @@ class RecommendationEngine {
       add('Scan a second leaf from the same plant to confirm — top diagnoses were statistically close');
     }
 
-    if (disease.label == 'Pest Damage' || visual.pestInjuryScore > 0.08) {
+    if (soilMoisture != null) {
+      for (final line in SoilMoistureAdvisor.recommendations(soilMoisture)) {
+        add(line);
+      }
+    }
+
+    if (disease.label != TflitePostProcess.uncertainLabel) {
+      for (final line in DiseaseRemedies.forLabel(disease.label)) {
+        add(line);
+      }
+    }
+
+    if (health == CropHealthLevel.healthy &&
+        disease.label != 'Healthy' &&
+        disease.label != TflitePostProcess.uncertainLabel) {
+      add(
+        'Health tier follows leaf color + holes: this photo still looks mostly green/intact — '
+        'use the disease label as a hint and verify on the plant or rescan another leaf.',
+      );
+    }
+
+    final showPestIpm = disease.label == 'Pest Damage' ||
+        (visual.pestInjuryScore > 0.135 && VisionRobustness.allowAggressivePestHeuristics(visual));
+    if (showPestIpm) {
       add('Inspect leaf undersides with a hand lens for mites, aphids, caterpillars, or beetle adults');
       add('Shake foliage over white paper — moving specks can confirm thrips or mites');
       add('Consider labeled biocontrol or reduced-risk insecticides (neem, spinosad, soaps) per crop label');
@@ -130,24 +148,7 @@ class RecommendationEngine {
       add('Improve organic matter and run a soil test for micronutrients');
     }
 
-    switch (disease.label) {
-      case TflitePostProcess.uncertainLabel:
-        break;
-      case 'Leaf Blight':
-        add('Use an appropriate fungicide promptly and remove heavily infected tissue');
-        add('Improve canopy airflow and avoid prolonged leaf wetness');
-      case 'Powdery Mildew':
-        add('Apply sulfur- or neem-based treatments suitable for your crop');
-        add('Reduce crowding and humidity around leaves where possible');
-      case 'Rust':
-        add('Apply a labeled rust fungicide and destroy crop debris near the field');
-      case 'Leaf Spot':
-        add('Use a copper or broad-spectrum fungicide per label; avoid overhead irrigation');
-      case 'Pest Damage':
-        break;
-      default:
-        break;
-    }
+    // Disease-specific remedy lines come from [DiseaseRemedies] (Plant-Village–style IPM hints).
 
     if (pest == PestRiskLevel.high && disease.label != 'Pest Damage') {
       add('High pest pressure risk — scout twice weekly and rotate modes of action if spraying');
@@ -161,6 +162,6 @@ class RecommendationEngine {
 
     add('Keep consistent irrigation and photograph changes every few days');
 
-    return out.take(10).toList();
+    return out.take(18).toList();
   }
 }

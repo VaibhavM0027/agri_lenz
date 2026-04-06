@@ -8,6 +8,7 @@ import 'package:uuid/uuid.dart';
 
 import '../models/analysis_models.dart';
 import 'history_entry.dart';
+import 'moisture_trend_store.dart';
 
 class HistoryRepository {
   HistoryRepository._();
@@ -52,6 +53,7 @@ class HistoryRepository {
     await file.writeAsBytes(report.previewBytes, flush: true);
 
     final entry = HistoryEntry.fromReport(report, id: id, imageFileName: fileName);
+    await MoistureTrendStore.record(report.soilMoistureBand);
     var list = await loadEntries();
     list = [entry, ...list.where((e) => e.id != id)];
     if (list.length > _maxItems) {

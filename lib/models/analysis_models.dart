@@ -1,5 +1,9 @@
 import 'dart:typed_data';
 
+import 'soil_moisture.dart';
+
+export 'soil_moisture.dart';
+
 enum CropHealthLevel { healthy, moderate, critical }
 
 enum PestRiskLevel { low, medium, high }
@@ -70,6 +74,10 @@ class CropAnalysisReport {
     required this.disease,
     required this.pestRisk,
     required this.soilInsight,
+    required this.soilMoisture,
+    required this.soilMoistureBand,
+    required this.soilMoistureSummary,
+    required this.soilMoistureDetail,
     required this.recommendations,
     required this.usedTfliteModel,
     required this.visionCorrectedTflite,
@@ -77,6 +85,7 @@ class CropAnalysisReport {
     required this.photoQuality,
     required this.uncertainty,
     required this.usedMultiScaleVision,
+    this.soilImagePreviewBytes,
   });
 
   final Uint8List previewBytes;
@@ -84,6 +93,21 @@ class CropAnalysisReport {
   final DiseasePrediction disease;
   final PestRiskLevel pestRisk;
   final String soilInsight;
+
+  /// Optional field / probe estimate from the farmer (sheet).
+  final SoilMoistureLevel? soilMoisture;
+
+  /// Fused three-band estimate (leaf + optional soil image + field + sensor).
+  final SoilMoistureBand soilMoistureBand;
+
+  /// Short headline for sharing (includes emoji band).
+  final String soilMoistureSummary;
+
+  /// How the estimate was derived (sources + caveats).
+  final String soilMoistureDetail;
+
+  /// Optional soil photo used for appearance heuristics (thumbnail only).
+  final Uint8List? soilImagePreviewBytes;
   final List<String> recommendations;
   final bool usedTfliteModel;
 
@@ -128,6 +152,8 @@ class CropAnalysisReport {
       ..writeln('Detected: ${disease.label} (Confidence: $pct%)')
       ..writeln('Pest Risk: $pestRiskLabel')
       ..writeln('Soil Insight: $soilInsight')
+      ..writeln(soilMoistureSummary)
+      ..writeln(soilMoistureDetail)
       ..writeln('Analysis mode: $mode');
     if (visionCorrectedTflite) {
       buf.writeln('Note: vision layer adjusted the model output (holes / chew / speckle cues).');

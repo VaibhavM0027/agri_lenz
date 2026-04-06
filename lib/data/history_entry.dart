@@ -14,6 +14,10 @@ class HistoryEntry {
     required this.cropHealthIndex,
     required this.pestRiskIndex,
     required this.soilInsight,
+    required this.soilMoistureIndex,
+    required this.soilMoistureBandIndex,
+    required this.soilMoistureSummary,
+    required this.soilMoistureDetail,
     required this.recommendations,
     required this.usedTfliteModel,
     required this.visionCorrectedTflite,
@@ -37,6 +41,14 @@ class HistoryEntry {
   final int cropHealthIndex;
   final int pestRiskIndex;
   final String soilInsight;
+
+  /// `-1` = not recorded; otherwise [SoilMoistureLevel.index].
+  final int soilMoistureIndex;
+
+  /// [SoilMoistureBand.index] at save time.
+  final int soilMoistureBandIndex;
+  final String soilMoistureSummary;
+  final String soilMoistureDetail;
   final List<String> recommendations;
   final bool usedTfliteModel;
   final bool visionCorrectedTflite;
@@ -66,6 +78,10 @@ class HistoryEntry {
       cropHealthIndex: r.cropHealth.index,
       pestRiskIndex: r.pestRisk.index,
       soilInsight: r.soilInsight,
+      soilMoistureIndex: r.soilMoisture?.index ?? -1,
+      soilMoistureBandIndex: r.soilMoistureBand.index,
+      soilMoistureSummary: r.soilMoistureSummary,
+      soilMoistureDetail: r.soilMoistureDetail,
       recommendations: List<String>.from(r.recommendations),
       usedTfliteModel: r.usedTfliteModel,
       visionCorrectedTflite: r.visionCorrectedTflite,
@@ -79,6 +95,17 @@ class HistoryEntry {
       runnerUpLabel: r.uncertainty.runnerUpLabel,
       runnerUpScore: r.uncertainty.runnerUpScore,
     );
+  }
+
+  SoilMoistureLevel? get soilMoistureOrNull {
+    final n = SoilMoistureLevel.values.length;
+    if (soilMoistureIndex < 0 || soilMoistureIndex >= n) return null;
+    return SoilMoistureLevel.values[soilMoistureIndex];
+  }
+
+  SoilMoistureBand get soilMoistureBandOrDefault {
+    final i = soilMoistureBandIndex.clamp(0, SoilMoistureBand.values.length - 1);
+    return SoilMoistureBand.values[i];
   }
 
   CropAnalysisReport toReport(Uint8List previewBytes) {
@@ -103,6 +130,10 @@ class HistoryEntry {
       ),
       pestRisk: PestRiskLevel.values[pestRiskIndex.clamp(0, PestRiskLevel.values.length - 1)],
       soilInsight: soilInsight,
+      soilMoisture: soilMoistureOrNull,
+      soilMoistureBand: soilMoistureBandOrDefault,
+      soilMoistureSummary: soilMoistureSummary,
+      soilMoistureDetail: soilMoistureDetail,
       recommendations: List<String>.from(recommendations),
       usedTfliteModel: usedTfliteModel,
       visionCorrectedTflite: visionCorrectedTflite,
@@ -128,6 +159,10 @@ class HistoryEntry {
         'cropHealthIndex': cropHealthIndex,
         'pestRiskIndex': pestRiskIndex,
         'soilInsight': soilInsight,
+        'soilMoistureIndex': soilMoistureIndex,
+        'soilMoistureBandIndex': soilMoistureBandIndex,
+        'soilMoistureSummary': soilMoistureSummary,
+        'soilMoistureDetail': soilMoistureDetail,
         'recommendations': recommendations,
         'usedTfliteModel': usedTfliteModel,
         'visionCorrectedTflite': visionCorrectedTflite,
@@ -160,6 +195,12 @@ class HistoryEntry {
       cropHealthIndex: j['cropHealthIndex'] as int,
       pestRiskIndex: j['pestRiskIndex'] as int,
       soilInsight: j['soilInsight'] as String,
+      soilMoistureIndex: j['soilMoistureIndex'] as int? ?? -1,
+      soilMoistureBandIndex: j['soilMoistureBandIndex'] as int? ?? 1,
+      soilMoistureSummary: j['soilMoistureSummary'] as String? ??
+          'Soil moisture (estimated): 🟡 Moderate — generally in a workable range.',
+      soilMoistureDetail: j['soilMoistureDetail'] as String? ??
+          'Historical entry — open a new scan for a fresh fused soil estimate.',
       recommendations: (j['recommendations'] as List<dynamic>).map((e) => e as String).toList(),
       usedTfliteModel: j['usedTfliteModel'] as bool,
       visionCorrectedTflite: j['visionCorrectedTflite'] as bool,

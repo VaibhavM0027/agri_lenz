@@ -7,12 +7,49 @@ import 'package:image/image.dart' as img;
 class ImagePreprocess {
   const ImagePreprocess._();
 
+  /// Resize large images to prevent memory overflow (max 2048px)
+  static Uint8List resizeIfTooLarge(Uint8List raw, {int maxDimension = 2048}) {
+    try {
+      final im = img.decodeImage(raw);
+      if (im == null) return raw;
+      
+      // Only resize if image is too large
+      if (im.width <= maxDimension && im.height <= maxDimension) {
+        return raw; // Already small enough
+      }
+      
+      // Calculate new dimensions maintaining aspect ratio
+      final scale = maxDimension / math.max(im.width, im.height);
+      final newWidth = (im.width * scale).round();
+      final newHeight = (im.height * scale).round();
+      
+      // Resize with good quality
+      final resized = img.copyResize(
+        im,
+        width: newWidth,
+        height: newHeight,
+        interpolation: img.Interpolation.linear,
+      );
+      
+      // Re-encode as JPEG with compression
+      return Uint8List.fromList(img.encodeJpg(resized, quality: 85));
+    } catch (e) {
+      print('Warning: Could not resize image, using original: $e');
+      return raw; // Fallback to original
+    }
+  }
+
   /// Perceptual luminance stretch (5th–95th percentile) to reduce under/over exposure bias.
   static Uint8List normalizeIlluminationBytes(Uint8List raw) {
-    final im = img.decodeImage(raw);
-    if (im == null) return raw;
-    final out = normalizeIllumination(im);
-    return Uint8List.fromList(img.encodeJpg(out, quality: 90));
+    try {
+      final im = img.decodeImage(raw);
+      if (im == null) return raw;
+      final out = normalizeIllumination(im);
+      return Uint8List.fromList(img.encodeJpg(out, quality: 90));
+    } catch (e) {
+      print('Warning: Illumination normalization failed, using original: $e');
+      return raw; // Fallback to original
+    }
   }
 
   static img.Image normalizeIllumination(img.Image src) {
